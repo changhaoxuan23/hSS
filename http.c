@@ -5,6 +5,9 @@
 #include <string.h>
 #ifndef NDEBUG
 #include <stdio.h>
+#define debug(fmt, ...) fprintf(stderr, fmt __VA_OPT__(, ) __VA_ARGS__)
+#else
+#define debug(fmt, ...)
 #endif
 struct header {
   char *key;
@@ -21,15 +24,15 @@ static int insert_header(struct headers *headers, struct header *header) {
     headers->header_list = header;
     return HTTP_ERROR_CODE_SUCCEED;
   }
-  struct header *target = headers->header_list;
-  while (target->next != NULL && strcmp(target->key, header->key) < 0) {
-    target = target->next;
+  struct header **target = &headers->header_list;
+  while (*target != NULL && strcmp((*target)->key, header->key) < 0) {
+    target = &(*target)->next;
   }
-  if (strcmp(target->key, header->key) == 0) {
+  if (*target != NULL && strcmp((*target)->key, header->key) == 0) {
     return HTTP_ERROR_CODE_DUPLICATE_HEADER_KEY;
   }
-  header->next = target->next;
-  target->next = header;
+  header->next = *target;
+  *target = header;
   return HTTP_ERROR_CODE_SUCCEED;
 }
 struct body {
@@ -88,21 +91,25 @@ int http_request_initialize(struct http_request *_Nonnull request) {
   return HTTP_ERROR_CODE_SUCCEED;
 }
 
-int http_request_from_buffer(struct http_request *_Nonnull restrict destination,
-                             const void *_Nonnull restrict buffer, const size_t length) {
+int http_request_from_buffer(
+    struct http_request *_Nonnull restrict destination, const void *_Nonnull restrict buffer,
+    const size_t length
+) {
 #define trigger_incomplete                                                                                   \
   do {                                                                                                       \
     destination->state = HTTP_REQUEST_STATE_INVALID;                                                         \
+    debug("incomplete triggered at line %d\n", __LINE__);                                                    \
     return HTTP_ERROR_CODE_INCOMPLETE_REQUEST;                                                               \
   } while (false)
 #define trigger_invalid                                                                                      \
   do {                                                                                                       \
     destination->state = HTTP_REQUEST_STATE_INVALID;                                                         \
+    debug("invalid triggered at line %d\n", __LINE__);                                                       \
     return HTTP_ERROR_CODE_PARSE_INVALID_REQUEST_SYNTAX;                                                     \
   } while (false)
 #define skip_whitespaces                                                                                     \
   do {                                                                                                       \
-    while (isblank(((const char *)buffer)[end])) {                                                           \
+    while (isspace(((const char *)buffer)[end])) {                                                           \
       if (++end == length) {                                                                                 \
         trigger_incomplete;                                                                                  \
       }                                                                                                      \
@@ -111,7 +118,7 @@ int http_request_from_buffer(struct http_request *_Nonnull restrict destination,
   } while (false)
 #define range_non_blank                                                                                      \
   do {                                                                                                       \
-    while (end < length && !isblank(((const char *)buffer)[end])) {                                          \
+    while (end < length && !isspace(((const char *)buffer)[end])) {                                          \
       end++;                                                                                                 \
     }                                                                                                        \
   } while (false)
@@ -121,7 +128,7 @@ int http_request_from_buffer(struct http_request *_Nonnull restrict destination,
            (((const char *)buffer)[end] != '\r' || ((const char *)buffer)[end + 1] != '\n')) {               \
       end++;                                                                                                 \
     }                                                                                                        \
-    if (end + 1 == length) {                                                                                 \
+    if (end + 1 >= length) {                                                                                 \
       trigger_incomplete;                                                                                    \
     }                                                                                                        \
   } while (false)
@@ -139,6 +146,17 @@ int http_request_from_buffer(struct http_request *_Nonnull restrict destination,
   destination->start_line.method = HTTP_REQUEST_METHOD_GET;
   skip_whitespaces;
 
+  // parse url
+  range_non_blank;
+  if (start == end) {
+    trigger_incomplete;
+  }
+  destination->start_line.url_length = end - start;
+  destination->start_line.url = malloc(destination->start_line.url_length + 1);
+  memcpy(destination->start_line.url, buffer + start, destination->start_line.url_length);
+  destination->start_line.url[destination->start_line.url_length] = '\0';
+  skip_whitespaces;
+
   // parse http version
   range_non_blank;
   //  well, since this value is not used, we just do not check it, just make sure it is not empty
@@ -149,17 +167,7 @@ int http_request_from_buffer(struct http_request *_Nonnull restrict destination,
   destination->start_line.http_version = malloc(destination->start_line.http_version_length + 1);
   memcpy(destination->start_line.http_version, buffer + start, destination->start_line.http_version_length);
   destination->start_line.http_version[destination->start_line.http_version_length] = '\0';
-  skip_whitespaces;
 
-  // parse url
-  range_non_blank;
-  if (start == end) {
-    trigger_incomplete;
-  }
-  destination->start_line.url_length = end - start;
-  destination->start_line.url = malloc(destination->start_line.url_length + 1);
-  memcpy(destination->start_line.url, buffer + start, destination->start_line.url_length);
-  destination->start_line.url[destination->start_line.url_length] = '\0';
   //  assert we are facing a CRLF pair
   if (end + 1 >= length) {
     trigger_incomplete;
@@ -185,19 +193,19 @@ int http_request_from_buffer(struct http_request *_Nonnull restrict destination,
     }
     //  no whitespace is allowed from the beginning of the line to the colon, we will restrict this
     for (const char *c = buffer + start; c < colon; c++) {
-      if (isblank(*c)) {
+      if (isspace(*c)) {
         trigger_invalid;
       }
     }
-    size_t key_end = start + (colon - (const char *)buffer + start) + 1;
+    size_t key_end = colon - (const char *)buffer;
     //  the value shall not be empty, check it
     size_t value_start = key_end + 1;
     size_t value_end = end;
     //  there may be leading and/or tailing whitespaces
-    while (value_start != value_end && isblank(((const char *)buffer)[value_start])) {
+    while (value_start != value_end && isspace(((const char *)buffer)[value_start])) {
       value_start++;
     }
-    while (value_end != value_start && isblank(((const char *)buffer)[value_end - 1])) {
+    while (value_end != value_start && isspace(((const char *)buffer)[value_end - 1])) {
       value_end--;
     }
     if (value_start == value_end) {
@@ -228,6 +236,8 @@ int http_request_from_buffer(struct http_request *_Nonnull restrict destination,
     trigger_invalid;
   }
 
+  destination->state = HTTP_REQUEST_STATE_PARSED;
+
 #ifndef NDEBUG
   dump_request(destination);
 #endif
@@ -247,8 +257,10 @@ int http_request_get_method(const struct http_request *_Nonnull restrict request
   return request->start_line.method;
 }
 
-int http_request_get_url(const struct http_request *_Nonnull restrict request,
-                         char *_Nullable restrict buffer, size_t *_Nonnull restrict length) {
+int http_request_get_url(
+    const struct http_request *_Nonnull restrict request, char *_Nullable restrict buffer,
+    size_t *_Nonnull restrict length
+) {
   if (request->state != HTTP_REQUEST_STATE_PARSED) {
     return HTTP_ERROR_CODE_REQUEST_NO_VALID_DATA;
   }
@@ -261,9 +273,10 @@ int http_request_get_url(const struct http_request *_Nonnull restrict request,
   return HTTP_ERROR_CODE_SUCCEED;
 }
 
-int http_request_get_header(const struct http_request *_Nonnull restrict request,
-                            const char *_Nonnull restrict name, char *_Nullable restrict buffer,
-                            size_t *_Nonnull restrict length) {
+int http_request_get_header(
+    const struct http_request *_Nonnull restrict request, const char *_Nonnull restrict name,
+    char *_Nullable restrict buffer, size_t *_Nonnull restrict length
+) {
   if (request->state != HTTP_REQUEST_STATE_PARSED) {
     return HTTP_ERROR_CODE_REQUEST_NO_VALID_DATA;
   }
@@ -288,6 +301,9 @@ int http_request_destroy(struct http_request *_Nonnull request) {
   if (request->state == HTTP_REQUEST_STATE_INITIALIZED) {
     return HTTP_ERROR_CODE_SUCCEED;
   }
+  // free start line
+  free(request->start_line.http_version);
+  free(request->start_line.url);
   // free headers
   {
     struct header *target = request->headers.header_list;
@@ -306,16 +322,46 @@ int http_request_destroy(struct http_request *_Nonnull request) {
 
 int http_response_initialize(struct http_response *_Nonnull response) {}
 
-int http_response_set_code(struct http_response *_Nonnull restrict response, enum http_response_code code,
-                           const char *_Nullable restrict description) {}
+int http_response_set_code(
+    struct http_response *_Nonnull restrict response, enum http_response_code code,
+    const char *_Nullable restrict description
+) {}
 
-int http_response_set_header(struct http_response *_Nonnull restrict response,
-                             const char *_Nonnull restrict key, const char *_Nonnull restrict value) {}
+int http_response_set_header(
+    struct http_response *_Nonnull restrict response, const char *_Nonnull restrict key,
+    const char *_Nonnull restrict value
+) {}
 
-int http_response_set_body(struct http_response *_Nonnull restrict response,
-                           const void *_Nonnull restrict body, const size_t *_Nullable restrict length) {}
+int http_response_set_body(
+    struct http_response *_Nonnull restrict response, const void *_Nonnull restrict body,
+    const size_t *_Nullable restrict length
+) {}
 
-int http_response_render(struct http_response *_Nonnull restrict response, void *_Nullable restrict buffer,
-                         const size_t *_Nonnull restrict length) {}
+int http_response_render(
+    struct http_response *_Nonnull restrict response, void *_Nullable restrict buffer,
+    const size_t *_Nonnull restrict length
+) {}
 
 int http_response_destroy(struct http_request *_Nonnull request) {}
+
+const char *http_get_error_string(enum http_error_code error_code) {
+  switch (error_code) {
+  case HTTP_ERROR_CODE_REQUEST_NO_VALID_DATA:
+    return "the request supplied does not hold valid information: it may not initialized with HTTP request "
+           "message, or some error occurred when parsing the message";
+  case HTTP_ERROR_CODE_PARSE_INVALID_REQUEST_SYNTAX:
+    return "the syntax of HTTP request message to be parsed is invalid, therefore which may not be processed";
+  case HTTP_ERROR_CODE_INSUFFICIENT_BUFFER_SIZE:
+    return "the buffer supplied is insufficient to hold all the results";
+  case HTTP_ERROR_CODE_INCOMPLETE_REQUEST:
+    return "the HTTP request message to be processed is not complete";
+  case HTTP_ERROR_CODE_UNSUPPORTED_METHOD:
+    return "the HTTP request attempted a method that is not supported";
+  case HTTP_ERROR_CODE_DUPLICATE_HEADER_KEY:
+    return "the attempt to add multiple headers with the same key is rejected";
+  case HTTP_ERROR_CODE_NO_SUCH_HEADER:
+    return "the requested key does not exist in headers";
+  case HTTP_ERROR_CODE_SUCCEED:
+    return "not an error, the operation succeed";
+  }
+}
