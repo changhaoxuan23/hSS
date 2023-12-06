@@ -58,7 +58,7 @@ static void logging_implementation(enum logging_log_level level, const char *for
   assert(sizeof(after_output) / sizeof(after_output[0]) == LOGGING_LOG_LEVEL_OFF);
   fprintf(stderr, "%s", before_output[level]);
   // add time and level
-  fprintf(stderr, "[%04.06f][%s] ", (double)clock() / CLOCKS_PER_SEC, name[level]);
+  fprintf(stderr, "[%013.06f][%s] ", (double)clock() / CLOCKS_PER_SEC, name[level]);
   vfprintf(stderr, format, args);
   fprintf(stderr, "%s", after_output[level]);
 }

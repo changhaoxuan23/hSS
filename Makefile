@@ -14,10 +14,10 @@ debug:
 	@CFLAGS="-g3 -DLOGGING_LOG_LEVEL=0" LD_FLAGS="-fsanitize=address" make build
 release:
 	@CFLAGS="-O3 -DNDEBUG" LD_FLAGS="-flto -s" make build
+	sudo setcap cap_net_bind_service+ep $(TARGET)
 build: $(OBJS) $(TARGET)
 server: server.o http.o http_hl.o common.o tcp_connection.o tls_connection.o
 	$(CC) -o $@ $(LD_FLAGS) $^
-#	sudo setcap cap_net_bind_service+ep $@
 test:
 	@CFLAGS="-g3" LD_FLAGS="-fsanitize=address" make _real_test
 _real_test: $(TEST_OBJS) $(TESTS)

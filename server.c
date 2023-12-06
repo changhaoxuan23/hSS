@@ -24,8 +24,13 @@
 // constants
 enum {
   AuthorizationCodeLength = 32,
+#ifdef NDEBUG
+  HTTPPort = 80,
+  HTTPSPort = 443,
+#else
   HTTPPort = 8080,
   HTTPSPort = 8843,
+#endif
 };
 
 static bool *get_running(void) {
@@ -71,7 +76,7 @@ static const char *current_working_directory(void) {
   static char current_directory[1028];
   if (initialize) {
     if (getcwd(current_directory + 4, 1024) == NULL) {
-      fprintf(stderr, "cannot get current working directory\n");
+      logging_fatal("cannot get current working directory\n");
       exit(EXIT_FAILURE);
     }
     *((uint32_t *)current_directory) = strlen(current_directory + 4);
@@ -185,19 +190,36 @@ void close_all_file_descriptors(void) {
 }
 
 void listen_address(int epoll_file_descriptor, const struct addrinfo *address) {
+  // get description of the address we are trying to listed to
+  char address_buffer[INET6_ADDRSTRLEN];
+  void *target = NULL;
+  if (address->ai_addr->sa_family == AF_INET) {
+    target = &((struct sockaddr_in *)(address->ai_addr))->sin_addr;
+  } else {
+    assert(address->ai_addr->sa_family == AF_INET6);
+    target = &((struct sockaddr_in6 *)(address->ai_addr))->sin6_addr;
+  }
+  inet_ntop(address->ai_addr->sa_family, target, address_buffer, INET6_ADDRSTRLEN);
+  uint16_t port = *(uint16_t *)(((void *)address->ai_addr) + sizeof(address->ai_addr->sa_family));
+  port = ntohs(port);
+
   static const int yes = 1;
   int socket_file_descriptor = socket(address->ai_family, address->ai_socktype, address->ai_protocol);
-  setsockopt(socket_file_descriptor, SOL_SOCKET, SO_REUSEADDR, (void *)&yes, sizeof(int));
   if (socket_file_descriptor == -1) {
+    logging_error("cannot create socket: %s\n", strerror(errno));
     return;
   }
-  int result = 0;
-  result |= bind(socket_file_descriptor, address->ai_addr, address->ai_addrlen);
-  result |= listen(socket_file_descriptor, SOMAXCONN);
-  if (result != 0) {
-    close(socket_file_descriptor);
+  setsockopt(socket_file_descriptor, SOL_SOCKET, SO_REUSEADDR, (void *)&yes, sizeof(int));
+  if (bind(socket_file_descriptor, address->ai_addr, address->ai_addrlen) == -1) {
+    logging_error("cannot bind to %s:%hu: %s\n", address_buffer, port, strerror(errno));
     return;
   }
+  if (listen(socket_file_descriptor, SOMAXCONN) == -1) {
+    logging_error("cannot listen on %s:%hu: %s\n", address_buffer, port, strerror(errno));
+    return;
+  }
+  // log address on which we are listening
+  logging_information("now listening on address %s port %hu\n", address_buffer, port);
   struct file_descriptor_information *information =
       register_file_descriptor(socket_file_descriptor, LISTEN_SOCKET);
   struct epoll_event event = {.events = EPOLLIN, .data.ptr = information};
