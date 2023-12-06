@@ -90,15 +90,19 @@ int http_response_initialize(struct http_response *_Nonnull response);
 // set response code
 //  if NULL is passed to the nullable argument description, use a default description for it
 //  otherwise, use the supplied description directly while assuming it is null-terminated
+// NOTE: if you modified this enumerate here, update the corresponding mapping in http.c
 enum http_response_code {
   HTTP_RESPONSE_CODE_OK,                         // 200
+  HTTP_RESPONSE_CODE_NO_CONTENT,                 // 204
   HTTP_RESPONSE_CODE_PARTIAL_CONTENT,            // 206
   HTTP_RESPONSE_CODE_MOVE_MOVED_PERMANENTLY,     // 301
   HTTP_RESPONSE_CODE_BAD_REQUEST,                // 400
+  HTTP_RESPONSE_CODE_FORBIDDEN,                  // 403
   HTTP_RESPONSE_CODE_NOT_FOUND,                  // 404
   HTTP_RESPONSE_CODE_INTERNAL_SERVER_ERROR,      // 500
   HTTP_RESPONSE_CODE_NOT_IMPLEMENTED,            // 501
   HTTP_RESPONSE_CODE_HTTP_VERSION_NOT_SUPPORTED, // 505
+  HTTP_RESPONSE_CODE_MAX                         // keep this line at the bottom
 };
 int http_response_set_code(
     struct http_response *_Nonnull restrict response, enum http_response_code code,
@@ -107,6 +111,9 @@ int http_response_set_code(
 
 // set response header
 //  both key and value is null-terminated
+//  if a header with the same key already exists, its value will be replaced
+//  User NOTE: there is no need to care about Content-Length since which will be automatically calculated add
+//   added to the response
 int http_response_set_header(
     struct http_response *_Nonnull restrict response, const char *_Nonnull restrict key,
     const char *_Nonnull restrict value
@@ -115,6 +122,7 @@ int http_response_set_header(
 // set body of response
 //  if NULL is passed to the nullable argument length, treat body as null-terminated
 //  otherwise, body may not be null-terminated, whose length shall be determined by the argument
+//  if body is already set, it will be replaced
 int http_response_set_body(
     struct http_response *_Nonnull restrict response, const void *_Nonnull restrict body,
     const size_t *_Nullable restrict length
@@ -124,15 +132,15 @@ int http_response_set_body(
 //  see also http_request_get_url
 int http_response_render(
     struct http_response *_Nonnull restrict response, void *_Nullable restrict buffer,
-    const size_t *_Nonnull restrict length
+    size_t *_Nonnull restrict length
 );
 
 // cleanup HTTP response, see also http_request_destroy
-int http_response_destroy(struct http_request *_Nonnull request);
+int http_response_destroy(struct http_response *_Nonnull response);
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 // error interface
 // get an description of the error code
-const char *http_get_error_string(enum http_error_code error_code);
+const char *_Nonnull http_get_error_string(enum http_error_code error_code);
 #endif

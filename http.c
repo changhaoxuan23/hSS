@@ -1,10 +1,11 @@
 #include "http.h"
+#include <assert.h>
 #include <ctype.h>
 #include <stdbool.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #ifndef NDEBUG
-#include <stdio.h>
 #define debug(fmt, ...) fprintf(stderr, fmt __VA_OPT__(, ) __VA_ARGS__)
 #else
 #define debug(fmt, ...)
@@ -17,28 +18,76 @@ struct header {
 struct headers {
   struct header *header_list;
 };
+
+// lookup header with specified name from headers, return the pointer to which in *target if exists, the
+// pointer to the pointer which, in the list of headers, points to or will point to target if exists in *prev
+static void lookup_header(
+    const struct headers *headers, const char *name, struct header **target, struct header ***prev
+) {
+  *prev = (struct header **)&headers->header_list;
+  while (**prev != NULL && strcmp((**prev)->key, name) < 0) {
+    *prev = &(**prev)->next;
+  }
+  if (**prev != NULL && strcmp((**prev)->key, name) == 0) {
+    *target = **prev;
+    return;
+  }
+  *target = NULL;
+  return;
+}
+
 static int insert_header(struct headers *headers, struct header *header) {
   // we keep strict order in the list
-  if (headers->header_list == NULL) {
-    header->next = headers->header_list;
-    headers->header_list = header;
-    return HTTP_ERROR_CODE_SUCCEED;
-  }
-  struct header **target = &headers->header_list;
-  while (*target != NULL && strcmp((*target)->key, header->key) < 0) {
-    target = &(*target)->next;
-  }
-  if (*target != NULL && strcmp((*target)->key, header->key) == 0) {
+  struct header **prev = NULL;
+  struct header *target = NULL;
+  lookup_header(headers, header->key, &target, &prev);
+  if (target != NULL) {
     return HTTP_ERROR_CODE_DUPLICATE_HEADER_KEY;
   }
-  header->next = *target;
-  *target = header;
+  header->next = *prev;
+  *prev = header;
   return HTTP_ERROR_CODE_SUCCEED;
 }
+
+static void destroy_header(struct header *header) {
+  if (header == NULL) {
+    return;
+  }
+  free(header->key);
+  free(header->value);
+  header->key = NULL;
+  header->value = NULL;
+}
+
+static void destroy_headers(struct headers *headers) {
+  if (headers == NULL) {
+    return;
+  }
+  struct header *target = headers->header_list;
+  headers->header_list = NULL;
+  while (target != NULL) {
+    destroy_header(target);
+    struct header *next = target->next;
+    free(target);
+    target = next;
+  }
+}
+
 struct body {
   void *body;
   size_t length;
 };
+
+static void destroy_body(struct body *body) {
+  if (body == NULL) {
+    return;
+  }
+  if (body->body != NULL) {
+    free(body->body);
+    body->body = NULL;
+  }
+  body->length = 0;
+}
 
 struct request_start_line {
   enum http_request_method method;
@@ -237,10 +286,6 @@ int http_request_from_buffer(
   }
 
   destination->state = HTTP_REQUEST_STATE_PARSED;
-
-#ifndef NDEBUG
-  dump_request(destination);
-#endif
   return HTTP_ERROR_CODE_SUCCEED;
 
 #undef trigger_incomplete
@@ -305,44 +350,190 @@ int http_request_destroy(struct http_request *_Nonnull request) {
   free(request->start_line.http_version);
   free(request->start_line.url);
   // free headers
-  {
-    struct header *target = request->headers.header_list;
-    while (target != NULL) {
-      struct header *next = target->next;
-      free(target->key);
-      free(target->value);
-      free(target);
-      target = next;
-    }
-  }
-  // free body: we do not need to do this since no body is supported
+  destroy_headers(&request->headers);
+  // free body: we do not need to do this since no body is supported, but it does not harm to do so
+  destroy_body(&request->body);
+
   // reinitialize this header to enable further usage
   return http_request_initialize(request);
 }
 
-int http_response_initialize(struct http_response *_Nonnull response) {}
+struct state_line {
+  enum http_response_code code;
+  char *description;
+  size_t description_length;
+};
+struct http_response {
+  struct state_line state_line;
+  struct headers headers;
+  struct body body;
+};
+const size_t http_response_size = sizeof(struct http_response);
+
+int http_response_initialize(struct http_response *_Nonnull response) {
+  response->state_line.description = NULL;
+  response->state_line.description_length = 0;
+  response->headers.header_list = NULL;
+  response->body.body = NULL;
+  response->body.length = 0;
+  return HTTP_ERROR_CODE_SUCCEED;
+}
+
+// get default description of a state code, NULL if such code is not matched
+static const char *get_default_description(enum http_response_code code) {
+  static char *descriptions[] = {
+      "OK",        "No Content", "Partial Content",       "Moved Permanently", "Bad Request",
+      "Forbidden", "Not Found",  "Internal Server Error", "Not Implemented",   "HTTP Version Not Supported",
+  };
+  assert(sizeof(descriptions) / sizeof(descriptions[0]) == HTTP_RESPONSE_CODE_MAX);
+  if (code >= HTTP_RESPONSE_CODE_MAX || code < 0) {
+    debug("unmapped code value %d for response state\n", code);
+    return NULL;
+  }
+  return descriptions[code];
+}
+static const char *get_representative_state_code(enum http_response_code code) {
+  static char *state[] = {"200", "204", "206", "301", "400", "403", "404", "500", "501", "505"};
+  static char buffer[16];
+  assert(sizeof(state) / sizeof(state[0]) == HTTP_RESPONSE_CODE_MAX);
+  if (code >= HTTP_RESPONSE_CODE_MAX || code < 0) {
+    debug("unmapped code value %d for response state\n", code);
+    sprintf(buffer, "%03d", code);
+    return buffer;
+  }
+  return state[code];
+}
 
 int http_response_set_code(
     struct http_response *_Nonnull restrict response, enum http_response_code code,
     const char *_Nullable restrict description
-) {}
+) {
+  if (response->state_line.description != NULL) {
+    free(response->state_line.description);
+    response->state_line.description_length = 0;
+  }
+  if (description == NULL) {
+    description = get_default_description(code);
+  }
+  response->state_line.code = code;
+  if (description != NULL) {
+    response->state_line.description_length = strlen(description);
+    response->state_line.description = malloc(response->state_line.description_length + 1);
+    strcpy(response->state_line.description, description);
+  }
+  return HTTP_ERROR_CODE_SUCCEED;
+}
 
 int http_response_set_header(
     struct http_response *_Nonnull restrict response, const char *_Nonnull restrict key,
     const char *_Nonnull restrict value
-) {}
+) {
+  struct header **prev = NULL;
+  struct header *target = NULL;
+  lookup_header(&response->headers, key, &target, &prev);
+  if (target != NULL) {
+    free(target->value);
+    target->value = malloc(strlen(value) + 1);
+    strcpy(target->value, value);
+  } else {
+    target = malloc(sizeof(struct header));
+    target->key = malloc(strlen(key) + 1);
+    strcpy(target->key, key);
+    target->value = malloc(strlen(value) + 1);
+    strcpy(target->value, value);
+    target->next = *prev;
+    *prev = target;
+  }
+  return HTTP_ERROR_CODE_SUCCEED;
+}
 
 int http_response_set_body(
     struct http_response *_Nonnull restrict response, const void *_Nonnull restrict body,
     const size_t *_Nullable restrict length
-) {}
+) {
+  destroy_body(&response->body);
+  response->body.length = length == NULL ? strlen(body) : *length;
+  response->body.body = malloc(response->body.length);
+  memcpy(response->body.body, body, response->body.length);
+  // regenerate Content-Length
+  char buffer[64]; // such size shall be overwhelmingly large
+  sprintf(buffer, "%lu", response->body.length);
+  return http_response_set_header(response, "Content-Length", buffer);
+}
+
+// HTTP version used for response
+static const char *const HTTP_VERSION = "HTTP/1.1";
+static const size_t http_version_length = strlen(HTTP_VERSION);
+static const size_t state_code_length = 3;
+// measure the size of buffer required to render the response
+static size_t measure_response_size(const struct http_response *response) {
+  size_t result = 0;
+  // start line: [<VERSION> <STATE_CODE>{ <DESCRIPTION>}\r\n]
+  if (response->state_line.description_length != 0) {
+    result += http_version_length + state_code_length + response->state_line.description_length + 4;
+  } else {
+    result += http_version_length + state_code_length + 3;
+  }
+  // each header: [<KEY>: <VALUE>\r\n]
+  for (struct header *target = response->headers.header_list; target != NULL; target = target->next) {
+    result += strlen(target->key) + strlen(target->value) + 4;
+  }
+  // empty line splitting headers and body
+  result += 2;
+  // body size
+  result += response->body.length;
+  return result;
+}
+
+static inline void copy_and_advance(void *restrict *destination, const void *restrict source, size_t size) {
+  memcpy(*destination, source, size);
+  *destination += size;
+}
 
 int http_response_render(
     struct http_response *_Nonnull restrict response, void *_Nullable restrict buffer,
-    const size_t *_Nonnull restrict length
-) {}
+    size_t *_Nonnull restrict length
+) {
+  // update Content-Length if body was not set
+  if (response->body.length == 0) {
+    assert(response->body.body == NULL);
+    http_response_set_header(response, "Content-Length", "0");
+  }
+  size_t size = measure_response_size(response);
+  if (buffer == NULL || *length < size) {
+    *length = size;
+    return buffer == NULL ? HTTP_ERROR_CODE_SUCCEED : HTTP_ERROR_CODE_INSUFFICIENT_BUFFER_SIZE;
+  }
+  // state line
+  copy_and_advance(&buffer, HTTP_VERSION, http_version_length);
+  copy_and_advance(&buffer, " ", 1);
+  copy_and_advance(&buffer, get_representative_state_code(response->state_line.code), 3);
+  if (response->state_line.description_length != 0) {
+    copy_and_advance(&buffer, " ", 1);
+    copy_and_advance(&buffer, response->state_line.description, response->state_line.description_length);
+  }
+  copy_and_advance(&buffer, "\r\n", 2);
+  // headers
+  for (struct header *target = response->headers.header_list; target != NULL; target = target->next) {
+    copy_and_advance(&buffer, target->key, strlen(target->key));
+    copy_and_advance(&buffer, ": ", 2);
+    copy_and_advance(&buffer, target->value, strlen(target->value));
+    copy_and_advance(&buffer, "\r\n", 2);
+  }
+  // empty line
+  copy_and_advance(&buffer, "\r\n", 2);
+  // body
+  copy_and_advance(&buffer, response->body.body, response->body.length);
+  *length = size;
+  return HTTP_ERROR_CODE_SUCCEED;
+}
 
-int http_response_destroy(struct http_request *_Nonnull request) {}
+int http_response_destroy(struct http_response *_Nonnull response) {
+  free(response->state_line.description);
+  destroy_headers(&response->headers);
+  destroy_body(&response->body);
+  return http_response_initialize(response);
+}
 
 const char *http_get_error_string(enum http_error_code error_code) {
   switch (error_code) {

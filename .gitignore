@@ -1,3 +1,6 @@
 test*
 *.out
 *.o
+*.mp4
+keys
+server
