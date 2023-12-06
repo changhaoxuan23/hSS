@@ -68,3 +68,10 @@ void logging_information(const char *format, ...) { forward_log(LOGGING_LOG_LEVE
 void logging_warning(const char *format, ...) { forward_log(LOGGING_LOG_LEVEL_WARNING); }
 void logging_error(const char *format, ...) { forward_log(LOGGING_LOG_LEVEL_ERROR); }
 void logging_fatal(const char *format, ...) { forward_log(LOGGING_LOG_LEVEL_FATAL); }
+
+void logging_set_level(enum logging_log_level level) {
+  if (level < LOGGING_LOG_LEVEL_FULL || level > LOGGING_LOG_LEVEL_OFF) {
+    return;
+  }
+  *log_level() = level;
+}

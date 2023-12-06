@@ -283,45 +283,6 @@ void handle_http_transaction(struct file_descriptor_information *information) {
   char *url = malloc(url_length);
   http_request_get_url(connection->request, url, &url_length);
 
-  // handle magic calls
-  if (strncmp(url, "/magic-call/", 12) == 0) {
-    char *code = get_request_header(connection->request, "Authorization");
-    bool forbidden = false;
-    if (code == NULL) {
-      generate_not_found(connection);
-      forbidden = true;
-    } else if (memcmp(code, get_authorization_code(), AuthorizationCodeLength) != 0) {
-      generate_forbidden(connection);
-      forbidden = true;
-    }
-    free(code);
-    code = NULL;
-    if (forbidden) {
-      goto cleanup;
-    }
-    if (strcmp(url + 12, "shutdown") == 0) {
-      http_response_set_code(connection->response, HTTP_RESPONSE_CODE_NO_CONTENT, NULL);
-      *get_running() = false;
-    } else {
-      http_response_set_code(connection->response, HTTP_RESPONSE_CODE_NOT_IMPLEMENTED, NULL);
-    }
-    goto cleanup;
-  }
-
-  // handle common requests
-  // make sure that the url never goes beyond current root
-  assert(*url == '/');
-  canonicalized_url = realpath(url + 1, NULL);
-  if (canonicalized_url == NULL) {
-    generate_not_found(connection);
-    goto cleanup;
-  }
-  const char *cwd = current_working_directory();
-  if (memcmp(cwd + 4, canonicalized_url, *(uint32_t *)cwd) != 0) {
-    generate_not_found(connection);
-    goto cleanup;
-  }
-
   // we do not check if the file exist if we are on TCP session: redirect directly to TLS address
   if (information->type == TCP_SOCKET) {
     http_response_set_code(connection->response, HTTP_RESPONSE_CODE_MOVE_MOVED_PERMANENTLY, NULL);
@@ -340,6 +301,48 @@ void handle_http_transaction(struct file_descriptor_information *information) {
     inet_ntop(address.ss_family, target, address_buffer, INET6_ADDRSTRLEN);
     sprintf(buffer, "https://%s:%hu%s", address_buffer, HTTPSPort, url);
     http_response_set_header(connection->response, "Location", buffer);
+    goto cleanup;
+  }
+
+  // handle magic calls
+  if (strncmp(url, "/magic-call/", 12) == 0) {
+    char *code = get_request_header(connection->request, "Authorization");
+    bool forbidden = false;
+    if (code == NULL) {
+      generate_not_found(connection);
+      forbidden = true;
+    } else if (memcmp(code, get_authorization_code(), AuthorizationCodeLength) != 0) {
+      generate_forbidden(connection);
+      forbidden = true;
+    }
+    free(code);
+    code = NULL;
+    if (forbidden) {
+      goto cleanup;
+    }
+    if (strcmp(url + 12, "shutdown") == 0) {
+      *get_running() = false;
+      http_response_set_code(connection->response, HTTP_RESPONSE_CODE_NO_CONTENT, NULL);
+    } else if (strncmp(url + 12, "set-log-level?level=", 20) == 0) {
+      logging_set_level(strtol(url + 32, NULL, 10));
+      http_response_set_code(connection->response, HTTP_RESPONSE_CODE_NO_CONTENT, NULL);
+    } else {
+      http_response_set_code(connection->response, HTTP_RESPONSE_CODE_NOT_IMPLEMENTED, NULL);
+    }
+    goto cleanup;
+  }
+
+  // handle common requests
+  // make sure that the url never goes beyond current root
+  assert(*url == '/');
+  canonicalized_url = realpath(url + 1, NULL);
+  if (canonicalized_url == NULL) {
+    generate_not_found(connection);
+    goto cleanup;
+  }
+  const char *cwd = current_working_directory();
+  if (memcmp(cwd + 4, canonicalized_url, *(uint32_t *)cwd) != 0) {
+    generate_not_found(connection);
     goto cleanup;
   }
 

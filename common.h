@@ -61,4 +61,6 @@ void logging_information(const char *format, ...);
 void logging_warning(const char *format, ...);
 void logging_error(const char *format, ...);
 void logging_fatal(const char *format, ...);
+
+void logging_set_level(enum logging_log_level level);
 #endif
